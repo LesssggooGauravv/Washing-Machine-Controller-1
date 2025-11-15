@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-g">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fuzzy Wash Time Controller</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for better aesthetics */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .canvas-container {
+            border: 1px solid #e2e8f0;
+            border-radius: 0.5rem;
+            overflow: hidden;
+        }
+        canvas {
+            background-color: #fdfdfd;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-4xl bg-white rounded-lg shadow-xl p-6 md:p-8 space-y-6">
+        
+        <h1 class="text-3xl font-bold text-center text-gray-800">
+            Fuzzy Washing Machine Controller
+        </h1>
+        <p class="text-center text-gray-600">
+            Mamdani approach ka istemaal karke wash time determine karein.
+        </p>
+
+        <!-- Inputs Section -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Dirt Input -->
+            <div class="bg-gray-50 p-5 rounded-lg border border-gray-200">
+                <label for="dirtSlider" class="block text-lg font-medium text-gray-700">
+                    Dirt (0-100)
+                </label>
+                <div class="flex items-center space-x-4 mt-2">
+                    <input type="range" id="dirtSlider" min="0" max="100" value="50" step="1" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
+                    <span id="dirtValue" class="text-lg font-semibold text-blue-600 w-12 text-right">50</span>
+                </div>
+                <div class="canvas-container mt-4">
+                    <canvas id="dirtChart" width="400" height="150"></canvas>
+                </div>
+            </div>
+            
+            <!-- Grease Input -->
+            <div class="bg-gray-50 p-5 rounded-lg border border-gray-200">
+                <label for="greaseSlider" class="block text-lg font-medium text-gray-700">
+                    Grease (0-50)
+                </label>
+                <div class="flex items-center space-x-4 mt-2">
+                    <input type="range" id="greaseSlider" min="0" max="50" value="25" step="0.5" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
+                    <span id="greaseValue" class="text-lg font-semibold text-green-600 w-12 text-right">25</span>
+                </div>
+                <div class="canvas-container mt-4">
+                    <canvas id="greaseChart" width="400" height="150"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Output Section -->
+        <div class="space-y-4">
+            <!-- Calculated Wash Time -->
+            <div class="bg-blue-50 border border-blue-200 p-5 rounded-lg text-center">
+                <h2 class="text-xl font-medium text-gray-700">Calculated Wash Time:</h2>
+                <p class="text-4xl font-bold text-blue-700 mt-2">
+                    <span id="washTimeResult">0.00</span> minutes
+                </p>
+            </div>
+            
+            <!-- Output Visualization -->
+            <div class="bg-gray-50 p-5 rounded-lg border border-gray-200">
+                <h3 class="text-lg font-medium text-gray-700 text-center mb-2">
+                    Output Membership & Defuzzification (CoG)
+                </h3>
+                <div class="canvas-container">
+                    <canvas id="outputChart" width="800" height="200"></canvas>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // --- 1. Get DOM Elements ---
+        const dirtSlider = document.getElementById('dirtSlider');
+        const dirtValue = document.getElementById('dirtValue');
+        const greaseSlider = document.getElementById('greaseSlider');
+        const greaseValue = document.getElementById('greaseValue');
+        const washTimeResult = document.getElementById('washTimeResult');
+        
+        const dirtCtx = document.getElementById('dirtChart').getContext('2d');
+        const greaseCtx = document.getElementById('greaseChart').getContext('2d');
+        const outputCtx = document.getElementById('outputChart').getContext('2d');
+
+        // --- 2. Helper Function: Triangular Membership Function ---
+        /**
+         * Calculates the membership value for a triangular MF.
+         * @param {number} x - The crisp input value.
+         * @param {number} a - The left foot of the triangle.
+         * @param {number} b - The peak of the triangle.
+         * @param {number} c - The right foot of the triangle.
+         * @returns {number} Membership value (0 to 1).
+         */
+        function triangularMF(x, a, b, c) {
+            if (a === b && b === c) return x === b ? 1 : 0;
+            if (a === b) return x >= a && x <= c ? (c - x) / (c - b) : 0;
+            if (b === c) return x >= a && x <= c ? (x - a) / (b - a) : 0;
+            
+            return Math.max(0, Math.min(
+                (x - a) / (b - a),
+                (c - x) / (c - b)
+            ));
+        }
+
+        // --- 3. Define Membership Functions for Inputs & Output ---
+        
+        // Input: Dirt (0-100)
+        const dirtMFs = {
+            'VSD': (x) => triangularMF(x, 0, 0, 25),   // Very Small Dirt
+            'SD':  (x) => triangularMF(x, 0, 25, 50),  // Small Dirt
+            'MD':  (x) => triangularMF(x, 25, 50, 75), // Medium Dirt
+            'HD':  (x) => triangularMF(x, 50, 75, 100),// High Dirt
+            'VHD': (x) => triangularMF(x, 75, 100, 100)// Very High Dirt
+        };
+        const dirtParams = {
+            'VSD': { a: 0, b: 0, c: 25, color: '#0ea5e9' },  // sky-500
+            'SD':  { a: 0, b: 25, c: 50, color: '#22c55e' }, // green-500
+            'MD':  { a: 25, b: 50, c: 75, color: '#eab308' },// yellow-500
+            'HD':  { a: 50, b: 75, c: 100, color: '#f97316' },// orange-500
+            'VHD': { a: 75, b: 100, c: 100, color: '#ef4444' } // red-500
+        };
+
+        // Input: Grease (0-50)
+        const greaseMFs = {
+            'SG': (x) => triangularMF(x, 0, 0, 25),    // Small Grease
+            'MG': (x) => triangularMF(x, 0, 25, 50),   // Medium Grease
+            'HG': (x) => triangularMF(x, 25, 50, 50)   // High Grease
+        };
+        const greaseParams = {
+            'SG': { a: 0, b: 0, c: 25, color: '#22c55e' },  // green-500
+            'MG': { a: 0, b: 25, c: 50, color: '#eab308' }, // yellow-500
+            'HG': { a: 25, b: 50, c: 50, color: '#ef4444' }  // red-500
+        };
+
+        // Output: Wash Time (0-60)
+        const washTimeMFs = {
+            'VST': (x) => triangularMF(x, 0, 0, 15),   // Very Short Time
+            'ST':  (x) => triangularMF(x, 0, 15, 30),  // Short Time
+            'MT':  (x) => triangularMF(x, 15, 30, 45), // Medium Time
+            'HT':  (x) => triangularMF(x, 30, 45, 60), // High Time
+            'VHT': (x) => triangularMF(x, 45, 60, 60)  // Very High Time
+        };
+        const washTimeParams = {
+            'VST': { a: 0, b: 0, c: 15, color: '#0ea5e9' },
+            'ST':  { a: 0, b: 15, c: 30, color: '#22c55e' },
+            'MT':  { a: 15, b: 30, c: 45, color: '#eab308' },
+            'HT':  { a: 30, b: 45, c: 60, color: '#f97316' },
+            'VHT': { a: 45, b: 60, c: 60, color: '#ef4444' }
+        };
+
+        // --- 4. Define the Fuzzy Rule Base ---
+        const fuzzyRules = {
+        //   Grease: SG     MG     HG
+            'VSD': { 'SG': 'VST', 'MG': 'VST', 'HG': 'ST' },
+            'SD':  { 'SG': 'VST', 'MG': 'ST',  'HG': 'MT' },
+            'MD':  { 'SG': 'ST',  'MG': 'MT',  'HG': 'HT' },
+            'HD':  { 'SG': 'MT',  'MG': 'HT',  'HG': 'VHT' },
+            'VHD': { 'SG': 'HT',  'MG': 'VHT', 'HG': 'VHT' }
+        };
+
+        // --- 5. Core Fuzzy Logic Calculation ---
+
+        function calculateWashTime() {
+            const crispDirt = parseFloat(dirtSlider.value);
+            const crispGrease = parseFloat(greaseSlider.value);
+
+            // --- Step 1: Fuzzification ---
+            // Calculate membership for each input fuzzy set
+            const dirtMembership = {};
+            for (const key in dirtMFs) {
+                dirtMembership[key] = dirtMFs[key](crispDirt);
+            }
+            
+            const greaseMembership = {};
+            for (const key in greaseMFs) {
+                greaseMembership[key] = greaseMFs[key](crispGrease);
+            }
+
+            // --- Step 2: Rule Evaluation (Inference) ---
+            // Find activation strength for each rule (using AND = Math.min)
+            // And aggregate strengths for each output set (using OR = Math.max)
+            const outputActivation = {
+                'VST': 0, 'ST': 0, 'MT': 0, 'HT': 0, 'VHT': 0
+            };
+
+            for (const dirtKey in fuzzyRules) {
+                for (const greaseKey in fuzzyRules[dirtKey]) {
+                    // Firing strength of this specific rule
+                    const strength = Math.min(dirtMembership[dirtKey], greaseMembership[greaseKey]);
+                    
+                    // Get the resulting output set (e.g., 'VST', 'MT')
+                    const outputSet = fuzzyRules[dirtKey][greaseKey];
+                    
+                    // Aggregate: find the *maximum* strength for this output set
+                    outputActivation[outputSet] = Math.max(outputActivation[outputSet], strength);
+                }
+            }
+
+            // --- Step 3: Aggregation ---
+            // This is implicitly done by `getAggregatedValue` during defuzzification.
+            // This function calculates the aggregated fuzzy set's value at a point 'x'.
+            function getAggregatedValue(x) {
+                let maxValue = 0;
+                for (const key in outputActivation) {
+                    const strength = outputActivation[key];
+                    if (strength > 0) {
+                        // Clipped membership value
+                        const clippedValue = Math.min(washTimeMFs[key](x), strength);
+                        maxValue = Math.max(maxValue, clippedValue);
+                    }
+                }
+                return maxValue;
+            }
+
+            // --- Step 4: Defuzzification (Center of Gravity - CoG) ---
+            // We approximate the integral using a discrete summation.
+            let numerator = 0;   // Integral of x * mu(x)
+            let denominator = 0; // Integral of mu(x)
+            
+            const outputMin = 0;
+            const outputMax = 60;
+            const steps = 100; // Number of slices for integration
+            const stepSize = (outputMax - outputMin) / steps;
+
+            for (let i = 0; i <= steps; i++) {
+                const x = outputMin + i * stepSize;
+                const mu = getAggregatedValue(x);
+                
+                numerator += x * mu;
+                denominator += mu;
+            }
+
+            let result = 0;
+            if (denominator > 0) {
+                result = numerator / denominator;
+            }
+            
+            // --- 6. Update UI & Visualizations ---
+            washTimeResult.textContent = result.toFixed(2);
+            
+            // Redraw charts with current values
+            drawInputChart(dirtCtx, dirtParams, 0, 100, crispDirt, "Dirt");
+            drawInputChart(greaseCtx, greaseParams, 0, 50, crispGrease, "Grease");
+            drawOutputChart(outputCtx, washTimeParams, 0, 60, outputActivation, getAggregatedValue, result);
+        }
+
+        // --- 7. Chart Drawing Functions ---
+
+        /**
+         * Generic function to draw an input membership function chart.
+         */
+        function drawInputChart(ctx, params, minX, maxX, crispValue, label) {
+            const w = ctx.canvas.width;
+            const h = ctx.canvas.height;
+            const pad = 30;
+
+            ctx.clearRect(0, 0, w, h);
+            ctx.strokeStyle = '#9ca3af'; // gray-400
+            ctx.fillStyle = '#6b7280'; // gray-500
+            ctx.lineWidth = 1;
+            ctx.font = '10px sans-serif';
+
+            // Draw X and Y axes
+            ctx.beginPath();
+            ctx.moveTo(pad, pad - 10);
+            ctx.lineTo(pad, h - pad);
+            ctx.lineTo(w - pad, h - pad);
+            ctx.stroke();
+
+            // Draw Y-axis labels (0, 0.5, 1)
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('1.0', pad - 5, pad - 10);
+            ctx.fillText('0.5', pad - 5, (h - pad) / 2 + (pad - 10) / 2);
+            ctx.fillText('0', pad - 5, h - pad);
+
+            // Draw X-axis labels
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            ctx.fillText(minX, pad, h - pad + 5);
+            ctx.fillText(maxX, w - pad, h - pad + 5);
+            ctx.fillText(label, w / 2, 5);
+
+
+            const scaleX = (w - 2 * pad) / (maxX - minX);
+            const scaleY = (h - 2 * pad + 10);
+
+            // Function to convert data points to canvas points
+            const toCanvas = (x, y) => ({
+                x: pad + (x - minX) * scaleX,
+                y: h - pad - y * scaleY
+            });
+
+            // Draw MFs
+            for (const key in params) {
+                const p = params[key];
+                ctx.beginPath();
+                const p1 = toCanvas(p.a, 0);
+                const p2 = toCanvas(p.b, 1);
+                const p3 = toCanvas(p.c, 0);
+                ctx.moveTo(p1.x, p1.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.lineTo(p3.x, p3.y);
+                ctx.strokeStyle = p.color;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Draw label
+                ctx.fillStyle = p.color;
+                ctx.font = 'bold 11px sans-serif';
+                ctx.fillText(key, p2.x, p2.y - 10);
+            }
+
+            // Draw crisp input line
+            const crispCanvas = toCanvas(crispValue, 0);
+            ctx.beginPath();
+            ctx.moveTo(crispCanvas.x, pad - 10);
+            ctx.lineTo(crispCanvas.x, h - pad);
+            ctx.strokeStyle = '#3b82f6'; // blue-500
+            ctx.lineWidth = 2;
+            ctx.setLineDash([4, 2]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            ctx.fillStyle = '#3b82f6';
+            ctx.font = 'bold 11px sans-serif';
+            ctx.fillText(crispValue.toFixed(1), crispCanvas.x, pad - 2);
+        }
+
+        /**
+         * Function to draw the output membership function chart.
+         */
+        function drawOutputChart(ctx, params, minX, maxX, activations, aggFunc, cog) {
+            const w = ctx.canvas.width;
+            const h = ctx.canvas.height;
+            const pad = 30;
+
+            ctx.clearRect(0, 0, w, h);
+            ctx.strokeStyle = '#9ca3af';
+            ctx.fillStyle = '#6b7280';
+            ctx.lineWidth = 1;
+            ctx.font = '10px sans-serif';
+
+            // Draw X and Y axes
+            ctx.beginPath();
+            ctx.moveTo(pad, pad - 10);
+            ctx.lineTo(pad, h - pad);
+            ctx.lineTo(w - pad, h - pad);
+            ctx.stroke();
+
+            // Draw Y-axis labels
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('1.0', pad - 5, pad - 10);
+            ctx.fillText('0.5', pad - 5, (h - pad) / 2 + (pad - 10) / 2);
+            ctx.fillText('0', pad - 5, h - pad);
+
+            // Draw X-axis labels
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            ctx.fillText(minX, pad, h - pad + 5);
+            ctx.fillText(maxX, w - pad, h - pad + 5);
+            ctx.fillText("Wash Time (min)", w / 2, 5);
+
+            const scaleX = (w - 2 * pad) / (maxX - minX);
+            const scaleY = (h - 2 * pad + 10);
+
+            const toCanvas = (x, y) => ({
+                x: pad + (x - minX) * scaleX,
+                y: h - pad - y * scaleY
+            });
+
+            // Draw original MFs (faded)
+            for (const key in params) {
+                const p = params[key];
+                ctx.beginPath();
+                const p1 = toCanvas(p.a, 0);
+                const p2 = toCanvas(p.b, 1);
+                const p3 = toCanvas(p.c, 0);
+                ctx.moveTo(p1.x, p1.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.lineTo(p3.x, p3.y);
+                ctx.strokeStyle = p.color;
+                ctx.globalAlpha = 0.2; // Faded
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                
+                // Draw label
+                ctx.fillStyle = p.color;
+                ctx.font = 'bold 11px sans-serif';
+                ctx.fillText(key, p2.x, p2.y - 10);
+            }
+            ctx.globalAlpha = 1.0;
+
+            // Draw aggregated (clipped) area
+            ctx.beginPath();
+            const startPoint = toCanvas(minX, 0);
+            ctx.moveTo(startPoint.x, startPoint.y);
+            const steps = w - 2 * pad; // 1 pixel per step
+            for (let i = 0; i <= steps; i++) {
+                const x = minX + (i / steps) * (maxX - minX);
+                const mu = aggFunc(x);
+                const p = toCanvas(x, mu);
+                ctx.lineTo(p.x, p.y);
+            }
+            const endPoint = toCanvas(maxX, 0);
+            ctx.lineTo(endPoint.x, endPoint.y);
+            ctx.closePath();
+            
+            ctx.fillStyle = 'rgba(59, 130, 246, 0.4)'; // blue-500 with alpha
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)'; // blue-500
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+
+            // Draw CoG (Center of Gravity) line
+            const cogCanvas = toCanvas(cog, 0);
+            ctx.beginPath();
+            ctx.moveTo(cogCanvas.x, pad - 10);
+            ctx.lineTo(cogCanvas.x, h - pad);
+            ctx.strokeStyle = '#d946ef'; // fuchsia-500
+            ctx.lineWidth = 3;
+            ctx.setLineDash([5, 3]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            ctx.fillStyle = '#d946ef';
+            ctx.font = 'bold 12px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(`CoG: ${cog.toFixed(2)}`, cogCanvas.x, pad - 2);
+        }
+
+        // --- 8. Event Listeners ---
+        dirtSlider.addEventListener('input', () => {
+            dirtValue.textContent = parseFloat(dirtSlider.value).toFixed(1);
+            calculateWashTime();
+        });
+
+        greaseSlider.addEventListener('input', () => {
+            greaseValue.textContent = parseFloat(greaseSlider.value).toFixed(1);
+            calculateWashTime();
+        });
+
+        // Initial calculation on load
+        window.addEventListener('load', calculateWashTime);
+
+    </script>
+</body>
+</html>
